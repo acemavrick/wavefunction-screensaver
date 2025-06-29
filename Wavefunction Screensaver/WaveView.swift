@@ -9,17 +9,18 @@ import Foundation
 import ScreenSaver
 import QuartzCore
 import MetalKit
+import SwiftUI
+import IOKit.ps
 
 // A struct to match the layout of our uniforms in the Metal shader.
 struct WaveUniforms {
-    var dx: Float = 0.0005
-    var dt: Float = 0.00005
-    var c: Float = 3.0
-    var time: Float = 0.0
-    var damper: Float = 0.9998
+    var dx: Float = 0.0005 // customizeable
+    var dt: Float = 0.00005 // customizeable
+    var c: Float = 3.0 // customizeable
+    var time: Float = 0.0 
+    var damper: Float = 0.9998 // customizeable
     var padding0: Float = 0.0 // for alignment
     var resolution: SIMD2<Float> = .zero
-    // for colormap, not used in grey fragment shader
     var c0, c1, c2, c3, c4, c5, c6: SIMD4<Float>
 }
 
@@ -48,20 +49,37 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
     
     private var uniforms = WaveUniforms(c0: .zero, c1: .zero, c2: .zero, c3: .zero, c4: .zero, c5: .zero, c6: .zero)
     
-    // Disturbance properties (all changed during runtime)
+    // Disturbance properties
+    // exposed
+    private var disturbanceCooldownRange: ClosedRange<Int> = 45...1000
+    private var disturbanceDensityRange: ClosedRange<Int> = 1...3
+    private var disturbanceRadiusRange: ClosedRange<Float> = 1...3
+    private var disturbanceStrengthRange: ClosedRange<Float> = 1...3
+
+    // internal
     private var frameCounter: Int = 0
-    private var disturbanceCooldown: Int = 60 // Add new disturbances after X frames
-    private var disturbanceDensity: Int = 1 // Add X disturbances
+    private var disturbanceCooldown: Int = 0
+    private var disturbanceDensity: Int = 1
 
     private var shouldBeAnimating = false
+    private var isOnBatteryPower = false
 
     override init?(frame: NSRect, isPreview: Bool) {
         super.init(frame: frame, isPreview: isPreview)
         
         self.wantsLayer = true
         
+        // check battery status
+        isOnBatteryPower = checkBatteryPower()
+        
         if isPreview {
             self.layer?.backgroundColor = NSColor.systemPink.cgColor
+            return
+        }
+        
+        if isOnBatteryPower {
+            // use low-power mode with simple background
+            self.layer?.backgroundColor = NSColor.systemBlue.cgColor
             return
         }
         
@@ -238,16 +256,16 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
                             Float.random(in: 0..<Float(view.drawableSize.width)),
                             Float.random(in: 0..<Float(view.drawableSize.height))
                         ),
-                        radius: Float.random(in: 1...3),
-                        strength: Float.random(in: 1...3)
+                        radius: Float.random(in: disturbanceRadiusRange),
+                        strength: Float.random(in: disturbanceStrengthRange)
                     )
                     computePass.setBytes(&disturbance, length: MemoryLayout<DisturbanceUniforms>.stride, index: 1)
                     computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
                 }
 
                 // decide next cooldown & density
-                disturbanceCooldown = Int.random(in: 100...1000) // frames
-                disturbanceDensity = Int.random(in: 1...3) // disturbances
+                disturbanceCooldown = Int.random(in: disturbanceCooldownRange)
+                disturbanceDensity = Int.random(in: disturbanceDensityRange)
             }
 
             // Wave simulation
@@ -281,6 +299,30 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
     
     override func startAnimation() {
         super.startAnimation()
+        
+        // recheck battery status when starting animation
+        let currentBatteryStatus = checkBatteryPower()
+        if currentBatteryStatus != isOnBatteryPower {
+            isOnBatteryPower = currentBatteryStatus
+            
+            if isOnBatteryPower {
+                // switch to battery mode
+                mtkView?.isPaused = true
+                mtkView?.isHidden = true
+                self.layer?.backgroundColor = NSColor.systemBlue.cgColor
+                shouldBeAnimating = false
+                return
+            } else {
+                // switch back to gpu mode if metal was previously initialized
+                if mtkView != nil {
+                    self.layer?.backgroundColor = nil
+                    mtkView?.isHidden = false
+                }
+            }
+        }
+        
+        guard !isOnBatteryPower else { return }
+        
         shouldBeAnimating = true
         mtkView?.isPaused = false
     }
@@ -290,5 +332,28 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
         shouldBeAnimating = false
         mtkView?.isPaused = true
         mtkView?.isHidden = true
+    }
+    
+    // battery power checking function
+    private func checkBatteryPower() -> Bool {
+        let powerSourceInfo = IOPSCopyPowerSourcesInfo()?.takeRetainedValue()
+        let powerSourcesList = IOPSCopyPowerSourcesList(powerSourceInfo)?.takeRetainedValue() as? [CFTypeRef]
+        
+        guard let sources = powerSourcesList else { return false }
+        
+        for source in sources {
+            let sourceInfo = IOPSGetPowerSourceDescription(powerSourceInfo, source)?.takeUnretainedValue()
+            guard let info = sourceInfo as? [String: Any] else { continue }
+            
+            // check if this is the internal battery
+            if let type = info[kIOPSTypeKey] as? String, type == kIOPSInternalBatteryType {
+                // check power source state
+                if let powerSource = info[kIOPSPowerSourceStateKey] as? String {
+                    return powerSource == kIOPSBatteryPowerValue
+                }
+            }
+        }
+        
+        return false
     }
 }
