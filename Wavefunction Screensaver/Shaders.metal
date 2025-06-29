@@ -20,6 +20,12 @@ struct WaveUniforms {
     float4 c0, c1, c2, c3, c4, c5, c6;
 };
 
+struct DisturbanceUniforms {
+    float2 position;
+    float radius;
+    float strength;
+};
+
 // a struct to pass data from the vertex to the fragment shader
 struct VertexOut {
     float4 position [[position]];
@@ -88,6 +94,20 @@ kernel void waveCopy(device float2* u_p [[buffer(0)]],
     u_c[index] = u_n[index];
 }
 
+kernel void addDisturbance(device float2* u_c [[buffer(0)]],
+                           constant DisturbanceUniforms &disturbance [[buffer(1)]],
+                           constant WaveUniforms &uniforms [[buffer(2)]],
+                           uint2 gid [[thread_position_in_grid]]) {
+    
+    uint index = gid.y * uint(uniforms.resolution.x) + gid.x;
+    if (index >= uint(uniforms.resolution.x * uniforms.resolution.y)) return;
+    
+    float dist = distance(float2(gid), disturbance.position);
+    if (dist < disturbance.radius) {
+        float pulse = disturbance.strength * (0.5 * (cos(dist / disturbance.radius * M_PI_F) + 1.0));
+        u_c[index].x += pulse;
+    }
+}
 
 fragment float4 waveFragment(VertexOut in [[stage_in]],
                              constant WaveUniforms &uniforms [[buffer(0)]],

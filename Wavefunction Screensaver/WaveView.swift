@@ -12,15 +12,22 @@ import MetalKit
 
 // A struct to match the layout of our uniforms in the Metal shader.
 struct WaveUniforms {
-    var dx: Float = 1.0
-    var dt: Float = 0.5
-    var c: Float = 1.0
+    var dx: Float = 0.0005
+    var dt: Float = 0.00005
+    var c: Float = 3.0
     var time: Float = 0.0
-    var damper: Float = 0.99
+    var damper: Float = 0.9998
     var padding0: Float = 0.0 // for alignment
     var resolution: SIMD2<Float> = .zero
     // for colormap, not used in grey fragment shader
     var c0, c1, c2, c3, c4, c5, c6: SIMD4<Float>
+}
+
+// A struct for passing disturbance data to the shader.
+struct DisturbanceUniforms {
+    var position: SIMD2<Float> = .zero
+    var radius: Float = 20.0
+    var strength: Float = 5.0
 }
 
 class WaveView: ScreenSaverView, MTKViewDelegate {
@@ -32,6 +39,7 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
     private var renderPipelineState: MTLRenderPipelineState!
     private var computePipelineState: MTLComputePipelineState!
     private var copyPipelineState: MTLComputePipelineState!
+    private var addDisturbancePipelineState: MTLComputePipelineState!
     
     // Buffers
     private var waveBufferP: MTLBuffer! // previous state
@@ -39,15 +47,27 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
     private var waveBufferN: MTLBuffer! // next state
     
     private var uniforms = WaveUniforms(c0: .zero, c1: .zero, c2: .zero, c3: .zero, c4: .zero, c5: .zero, c6: .zero)
+    
+    // Disturbance properties (all changed during runtime)
+    private var frameCounter: Int = 0
+    private var disturbanceCooldown: Int = 60 // Add new disturbances after X frames
+    private var disturbanceDensity: Int = 1 // Add X disturbances
+
+    private var shouldBeAnimating = false
 
     override init?(frame: NSRect, isPreview: Bool) {
         super.init(frame: frame, isPreview: isPreview)
         
         self.wantsLayer = true
         
+        if isPreview {
+            self.layer?.backgroundColor = NSColor.systemPink.cgColor
+            return
+        }
+        
         guard let device = MTLCreateSystemDefaultDevice() else {
-            self.layer?.backgroundColor = NSColor.blue.cgColor
-            print("Metal is not supported on this device")
+            // metal not supported
+            self.layer?.backgroundColor = NSColor.systemRed.cgColor
             return nil
         }
         self.device = device
@@ -59,9 +79,10 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
         self.mtkView = mtkView
         
         if !setupPipelines() {
+            // cannot setup pipelines
             mtkView.isPaused = true
             mtkView.isHidden = true
-            self.layer?.backgroundColor = NSColor.yellow.cgColor
+            self.layer?.backgroundColor = NSColor.systemYellow.cgColor
         }
     }
     
@@ -136,6 +157,17 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
             return false
         }
         
+        do {
+            guard let disturbanceFunction = library.makeFunction(name: "addDisturbance") else {
+                print("Could not find 'addDisturbance' function.")
+                return false
+            }
+            addDisturbancePipelineState = try device.makeComputePipelineState(function: disturbanceFunction)
+        } catch {
+            print("Could not create 'addDisturbance' pipeline state: \(error)")
+            return false
+        }
+        
         return true
     }
     
@@ -154,23 +186,8 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
             waveBufferC = device.makeBuffer(length: bufferSize, options: options)
             waveBufferN = device.makeBuffer(length: bufferSize, options: options)
             
-            // Create an initial state on the CPU with a disturbance in the center.
-            var initialData = [SIMD2<Float>](repeating: SIMD2<Float>(0.0, 1.0), count: width * height)
-            let centerX = width / 2
-            let centerY = height / 2
-            let disturbanceRadius: Float = 20.0
-
-            for y in 0..<height {
-                for x in 0..<width {
-                    let index = y * width + x
-                    let distance = sqrt(pow(Float(x - centerX), 2) + pow(Float(y - centerY), 2))
-                    if distance < disturbanceRadius {
-                        // Use a cosine bell for a smooth initial pulse.
-                        let pulse = 5.0 * (0.5 * (cos(distance / disturbanceRadius * .pi) + 1.0))
-                        initialData[index] = SIMD2<Float>(pulse, 1.0)
-                    }
-                }
-            }
+            // Create an initial state on the CPU
+            let initialData = [SIMD2<Float>](repeating: SIMD2<Float>(0.0, 1.0), count: width * height)
             
             // Create a temporary shared buffer to copy the initial data to the GPU.
             let initialDataSize = initialData.count * MemoryLayout<SIMD2<Float>>.stride
@@ -189,6 +206,8 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
     }
     
     func draw(in view: MTKView) {
+        guard shouldBeAnimating else { return }
+
         guard let drawable = view.currentDrawable,
               let renderPassDescriptor = view.currentRenderPassDescriptor,
               let commandBuffer = commandQueue.makeCommandBuffer() else {
@@ -203,6 +222,33 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
             let h = computePipelineState.maxTotalThreadsPerThreadgroup / w
             let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
             let threadsPerGrid = MTLSize(width: Int(view.drawableSize.width), height: Int(view.drawableSize.height), depth: 1)
+            
+            // Add disturbances
+            frameCounter += 1
+            if frameCounter >= disturbanceCooldown {
+                frameCounter = 0
+                
+                computePass.setComputePipelineState(addDisturbancePipelineState)
+                computePass.setBuffer(waveBufferC, offset: 0, index: 0)
+                computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 2)
+
+                for _ in 0..<disturbanceDensity {
+                    var disturbance = DisturbanceUniforms(
+                        position: SIMD2<Float>(
+                            Float.random(in: 0..<Float(view.drawableSize.width)),
+                            Float.random(in: 0..<Float(view.drawableSize.height))
+                        ),
+                        radius: Float.random(in: 1...3),
+                        strength: Float.random(in: 1...3)
+                    )
+                    computePass.setBytes(&disturbance, length: MemoryLayout<DisturbanceUniforms>.stride, index: 1)
+                    computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+                }
+
+                // decide next cooldown & density
+                disturbanceCooldown = Int.random(in: 100...1000) // frames
+                disturbanceDensity = Int.random(in: 1...3) // disturbances
+            }
 
             // Wave simulation
             computePass.setComputePipelineState(computePipelineState)
@@ -235,11 +281,13 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
     
     override func startAnimation() {
         super.startAnimation()
+        shouldBeAnimating = true
         mtkView?.isPaused = false
     }
     
     override func stopAnimation() {
         super.stopAnimation()
+        shouldBeAnimating = false
         mtkView?.isPaused = true
     }
 }
