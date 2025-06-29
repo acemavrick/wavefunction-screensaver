@@ -8,18 +8,39 @@
 import Foundation
 import ScreenSaver
 import QuartzCore
+import MetalKit
 
-class WaveView: ScreenSaverView {
-    var x: CGFloat = 0
-    var size, y: CGFloat
-    var displayLink: CADisplayLink?
-    var lastTimestamp: TimeInterval = 0
-    let speed: CGFloat = 400.0 // points per second
+class WaveView: ScreenSaverView, MTKViewDelegate {
+    private var mtkView: MTKView?
+    private var device: MTLDevice!
+    private var commandQueue: MTLCommandQueue!
+    private var pipelineState: MTLRenderPipelineState!
     
     override init?(frame: NSRect, isPreview: Bool) {
-        size = CGFloat.random(in: 50...300)
-        y = CGFloat.random(in: 0...(frame.height - size))
         super.init(frame: frame, isPreview: isPreview)
+        
+        // ensure this view is layer-backed
+        self.wantsLayer = true
+        
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            self.layer?.backgroundColor = NSColor.blue.cgColor
+            print("Metal is not supported on this device")
+            return nil
+        }
+        self.device = device
+
+        let mtkView = MTKView(frame: .zero, device: device)
+        mtkView.delegate = self
+        mtkView.autoresizingMask = [.width, .height]
+        self.addSubview(mtkView)
+        self.mtkView = mtkView
+        
+        if !setupPipeline() {
+            // indicate failure to set up the pipeline
+            mtkView.isPaused = true
+            mtkView.isHidden = true
+            self.layer?.backgroundColor = NSColor.yellow.cgColor
+        }
     }
     
     @available(*, unavailable)
@@ -27,60 +48,85 @@ class WaveView: ScreenSaverView {
         fatalError("init(coder:) has not been implemented")
     }
     
-    override func draw(_ rect: NSRect) {
-        // draw a single frame
-        NSColor.orange.set()
-        rect.fill()
-        
-        // draw another rectangle
-        NSColor.green.set()
-        NSRect(x: x, y: y, width: size, height: size).fill()
+    override func layout() {
+        super.layout()
+        mtkView?.frame = self.bounds
     }
     
-    @objc func step(displayLink: CADisplayLink) {
-        if lastTimestamp == 0 {
-            lastTimestamp = displayLink.timestamp
+    private func setupPipeline() -> Bool {
+        guard let mtkView = mtkView else { return false }
+        commandQueue = device.makeCommandQueue()
+
+        // explicitly load the compiled metal library from the bundle
+        let library: MTLLibrary
+        do {
+            let bundle = Bundle(for: WaveView.self)
+            guard let defaultMetalLibraryUrl = bundle.url(forResource: "default", withExtension: "metallib") else {
+                print("Could not find default.metallib in the bundle. Make sure Shaders.metal is added to the target.")
+                return false
+            }
+            library = try device.makeLibrary(URL: defaultMetalLibraryUrl)
+        } catch {
+            print("Could not load Metal library: \(error)")
+            return false
+        }
+
+        // create the vertex and fragment functions
+        let vertexFunction = library.makeFunction(name: "vertexShader")
+        let fragmentFunction = library.makeFunction(name: "fragmentShader")
+
+        // create a pipeline descriptor
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.vertexFunction = vertexFunction
+        pipelineDescriptor.fragmentFunction = fragmentFunction
+        pipelineDescriptor.colorAttachments[0].pixelFormat = mtkView.colorPixelFormat
+
+        // create the pipeline state
+        do {
+            pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+            return true
+        } catch {
+            print("Could not create render pipeline state: \(error)")
+            return false
+        }
+    }
+    
+    // this is no longer used for drawing, MTKView handles it
+    override func draw(_ rect: NSRect) {}
+    
+    // MARK: - MTKViewDelegate
+    
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        // called when the view size changes
+    }
+    
+    func draw(in view: MTKView) {
+        guard let drawable = view.currentDrawable,
+              let renderPassDescriptor = view.currentRenderPassDescriptor,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
             return
         }
 
-        let oldRect = NSRect(x: x, y: y, width: size, height: size)
+        // pass the viewport size to the fragment shader
+        var viewportSize = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
+        renderEncoder.setFragmentBytes(&viewportSize, length: MemoryLayout.size(ofValue: viewportSize), index: 0)
 
-        var deltaTime = displayLink.timestamp - lastTimestamp
-        lastTimestamp = displayLink.timestamp
-
-        // cap delta time to prevent large jumps on lag
-        if deltaTime > 0.1 {
-            deltaTime = 1.0 / 60.0
-        }
-
-        x += speed * CGFloat(deltaTime)
-
-        if x > bounds.width {
-            size = CGFloat.random(in: 50...300)
-            x = -size
-            
-            // ensure y-position is valid even with large sizes
-            let yRange = 0...(max(0, bounds.height - size))
-            y = CGFloat.random(in: yRange)
-        }
+        renderEncoder.setRenderPipelineState(pipelineState)
+        renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         
-        let newRect = NSRect(x: x, y: y, width: size, height: size)
-        
-        // redraw only the parts of the view that have changed
-        setNeedsDisplay(oldRect.union(newRect))
+        renderEncoder.endEncoding()
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
     }
     
     override func startAnimation() {
         super.startAnimation()
-        let screen = window?.screen ?? NSScreen.main
-        displayLink = screen?.displayLink(target: self, selector: #selector(step(displayLink:)))
-        displayLink?.add(to: .main, forMode: .common)
+        mtkView?.isPaused = false
     }
     
     override func stopAnimation() {
         super.stopAnimation()
-        displayLink?.invalidate()
-        displayLink = nil
-        lastTimestamp = 0
+        mtkView?.isPaused = true
     }
 }

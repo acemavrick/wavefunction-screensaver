@@ -6,13 +6,35 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		DBC094EF2E10BCB50002E4AC /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DBC094EE2E10BCB50002E4AC /* Metal.framework */; };
+		DBC094F12E10BCBC0002E4AC /* MetalPerformanceShaders.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DBC094F02E10BCBC0002E4AC /* MetalPerformanceShaders.framework */; };
+		DBC094F32E10BCC10002E4AC /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DBC094F22E10BCC10002E4AC /* MetalKit.framework */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		DB2CBDE12E108ED600FA09BD /* Wavefunction Screensaver.saver */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Wavefunction Screensaver.saver"; sourceTree = BUILT_PRODUCTS_DIR; };
+		DBC094EE2E10BCB50002E4AC /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		DBC094F02E10BCBC0002E4AC /* MetalPerformanceShaders.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalPerformanceShaders.framework; path = System/Library/Frameworks/MetalPerformanceShaders.framework; sourceTree = SDKROOT; };
+		DBC094F22E10BCC10002E4AC /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		DB230C722E10C0E200A5D7AE /* Exceptions for "Wavefunction Screensaver" folder in "Wavefunction Screensaver" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Wave.metal,
+			);
+			target = DB2CBDE02E108ED600FA09BD /* Wavefunction Screensaver */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DB2CBDE32E108ED600FA09BD /* Wavefunction Screensaver */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				DB230C722E10C0E200A5D7AE /* Exceptions for "Wavefunction Screensaver" folder in "Wavefunction Screensaver" target */,
+			);
 			path = "Wavefunction Screensaver";
 			sourceTree = "<group>";
 		};
@@ -23,6 +45,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DBC094F32E10BCC10002E4AC /* MetalKit.framework in Frameworks */,
+				DBC094F12E10BCBC0002E4AC /* MetalPerformanceShaders.framework in Frameworks */,
+				DBC094EF2E10BCB50002E4AC /* Metal.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -33,6 +58,7 @@
 			isa = PBXGroup;
 			children = (
 				DB2CBDE32E108ED600FA09BD /* Wavefunction Screensaver */,
+				DBC094ED2E10BCB50002E4AC /* Frameworks */,
 				DB2CBDE22E108ED600FA09BD /* Products */,
 			);
 			sourceTree = "<group>";
@@ -43,6 +69,16 @@
 				DB2CBDE12E108ED600FA09BD /* Wavefunction Screensaver.saver */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		DBC094ED2E10BCB50002E4AC /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				DBC094F22E10BCC10002E4AC /* MetalKit.framework */,
+				DBC094F02E10BCBC0002E4AC /* MetalPerformanceShaders.framework */,
+				DBC094EE2E10BCB50002E4AC /* Metal.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -254,11 +290,11 @@
 		DB2CBDEB2E108ED600FA09BD /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Wavefunction Screensaver";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -277,11 +313,11 @@
 		DB2CBDEC2E108ED600FA09BD /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Wavefunction Screensaver";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";

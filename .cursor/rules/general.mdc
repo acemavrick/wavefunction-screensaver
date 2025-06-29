@@ -1,0 +1,6 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+It is a priority to keep this software as lightweight, efficient, and performant as possible. Everything should be properly initiated and properly torn down, and setup should be fast. However, don't compromise on what it is supposed to actually do, and remain simple unless asked for advanced optimization. Make sure the code is modern as well. Feel free to consult the internet frequently.
