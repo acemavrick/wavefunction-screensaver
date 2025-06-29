@@ -41,7 +41,7 @@ This project is built with Swift and Metal. The main components are:
 
 ## Roadmap
 *(not in any specific order)*
-- Make a better fragment shader to visualize the waves.
+- Look into the use of Metal Performance Shaders for optimization.
 - Add user preferences pane for parameters (speed, damping, etc.)
 - Fix the resource usage issue when screensaver is dismissed
 - Add a notarized release.

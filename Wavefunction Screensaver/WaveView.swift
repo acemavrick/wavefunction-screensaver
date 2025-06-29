@@ -289,5 +289,6 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
         super.stopAnimation()
         shouldBeAnimating = false
         mtkView?.isPaused = true
+        mtkView?.isHidden = true
     }
 }

@@ -109,6 +109,43 @@ kernel void addDisturbance(device float2* u_c [[buffer(0)]],
     }
 }
 
+// map wave height to color
+float3 getColorForHeight(float height) {
+    float absHeight = abs(height);
+    
+    // black for very small amplitudes
+    if (absHeight < 0.025) {
+        return float3(0.0);
+    }
+    
+    // power function to make wave crests brighter and more prominent
+    float intensity = pow(absHeight, 0.75);
+
+    float3 color;
+    if (height > 0.0) {
+        // positive waves: smooth gradient from deep blue to cyan to pure white
+        float3 deep_blue = float3(0.0, 0.2, 0.9);
+        float3 cyan = float3(0.1, 0.9, 1.0);
+        color = mix(deep_blue, cyan, smoothstep(0.0, 0.5, intensity));
+        color = mix(color, float3(1.0), smoothstep(0.5, 1.0, intensity));
+    } else {
+        // negative waves: smooth gradient from deep magenta to hot pink to pure white
+        float3 deep_magenta = float3(0.8, 0.0, 0.6);
+        float3 hot_pink = float3(1.0, 0.3, 0.7);
+        color = mix(deep_magenta, hot_pink, smoothstep(0.0, 0.5, intensity));
+        color = mix(color, float3(1.0), smoothstep(0.5, 1.0, intensity));
+    }
+    
+    return color * intensity;
+}
+
+// filmic tone mapping operator to create a cinematic look
+float3 filmicToneMap(float3 color) {
+    color = max(float3(0.0), color - 0.004);
+    color = (color * (6.2 * color + 0.5)) / (color * (6.2 * color + 1.7) + 0.06);
+    return color;
+}
+
 fragment float4 waveFragment(VertexOut in [[stage_in]],
                              constant WaveUniforms &uniforms [[buffer(0)]],
                              device const float2* u_c [[buffer(1)]])
@@ -116,14 +153,65 @@ fragment float4 waveFragment(VertexOut in [[stage_in]],
     uint2 loc = uint2(in.position.xy);
     uint width = uint(uniforms.resolution.x);
     uint height = uint(uniforms.resolution.y);
-
+    
     if (loc.x >= width || loc.y >= height) {
         return float4(0.0, 0.0, 0.0, 1.0);
     }
-
+    
     uint index = loc.y * width + loc.x;
     float2 value = u_c[index];
+    float waveHeight = value.x;
+    float isActive = value.y;
 
-    // render grayscale based on wave height, and black for blocked cells
-    return float4(float3(value.x + 0.5), 1.0) * step(1.0, value.y);
-} 
+    if (isActive < 1.0) {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    // get base color of the current pixel
+    float3 baseColor = getColorForHeight(waveHeight);
+
+    // additive bloom/glow effect
+    // sample in a cross pattern (+)
+    float3 bloom = float3(0.0);
+    const int bloomRadius = 4;
+    const float bloomFalloff = 10.0; // falloff
+    
+    // horizontal samples
+    for (int i = -bloomRadius; i <= bloomRadius; ++i) {
+        if (i == 0) continue;
+        int2 sampleLoc = int2(loc) + int2(i, 0);
+        if (sampleLoc.x >= 0 && sampleLoc.x < width) {
+            uint sampleIndex = sampleLoc.y * width + sampleLoc.x;
+            if (u_c[sampleIndex].y >= 1.0) {
+                float sampleHeight = u_c[sampleIndex].x;
+                float weight = exp(-pow(float(i) / float(bloomRadius), 2.0) * bloomFalloff);
+                bloom += getColorForHeight(sampleHeight) * weight;
+            }
+        }
+    }
+    
+    // Vertical samples
+    for (int j = -bloomRadius; j <= bloomRadius; ++j) {
+        if (j == 0) continue;
+        int2 sampleLoc = int2(loc) + int2(0, j);
+        if (sampleLoc.y >= 0 && sampleLoc.y < height) {
+            uint sampleIndex = sampleLoc.y * width + sampleLoc.x;
+            if (u_c[sampleIndex].y >= 1.0) {
+                float sampleHeight = u_c[sampleIndex].x;
+                float weight = exp(-pow(float(j) / float(bloomRadius), 2.0) * bloomFalloff);
+                bloom += getColorForHeight(sampleHeight) * weight;
+            }
+        }
+    }
+    
+    // normalize bloom by an approximate weight
+    bloom /= (float(bloomRadius) * 1.5);
+
+    // combine and finalize color
+    float3 finalColor = baseColor + bloom;
+    
+    // apply filmic tone mapping for a more pleasing, cinematic result
+    finalColor = filmicToneMap(finalColor);
+    
+    return float4(finalColor, 1.0);
+}
