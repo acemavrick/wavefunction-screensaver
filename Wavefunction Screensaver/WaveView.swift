@@ -14,11 +14,11 @@ import IOKit.ps
 
 // A struct to match the layout of our uniforms in the Metal shader.
 struct WaveUniforms {
-    var dx: Float = 0.0005 // customizeable
-    var dt: Float = 0.00005 // customizeable
-    var c: Float = 3.0 // customizeable
+    var dx: Float = 0.0 // not customizeable from here
+    var dt: Float = 0.0 // not customizeable from here
+    var c: Float = 0.0 // not customizeable from here
     var time: Float = 0.0 
-    var damper: Float = 0.9998 // customizeable
+    var damper: Float = 0.0 // not customizeable from here
     var padding0: Float = 0.0 // for alignment
     var resolution: SIMD2<Float> = .zero
     var c0, c1, c2, c3, c4, c5, c6: SIMD4<Float>
@@ -31,6 +31,7 @@ struct DisturbanceUniforms {
     var strength: Float = 5.0
 }
 
+@MainActor
 class WaveView: ScreenSaverView, MTKViewDelegate {
     private var mtkView: MTKView?
     private var device: MTLDevice!
@@ -51,10 +52,10 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
     
     // Disturbance properties
     // exposed
-    private var disturbanceCooldownRange: ClosedRange<Int> = 45...1000
-    private var disturbanceDensityRange: ClosedRange<Int> = 1...3
-    private var disturbanceRadiusRange: ClosedRange<Float> = 1...3
-    private var disturbanceStrengthRange: ClosedRange<Float> = 1...3
+    private var disturbanceCooldownRange: ClosedRange<Int> = 0...0
+    private var disturbanceDensityRange: ClosedRange<Int> = 0...0
+    private var disturbanceRadiusRange: ClosedRange<Float> = 0...0
+    private var disturbanceStrengthRange: ClosedRange<Float> = 0...0
 
     // internal
     private var frameCounter: Int = 0
@@ -63,8 +64,61 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
 
     private var shouldBeAnimating = false
     private var isOnBatteryPower = false
+    
+    private var settingsWindow: NSWindow?
 
-    override init?(frame: NSRect, isPreview: Bool) {
+    let store = Store.shared
+
+    override var hasConfigureSheet: Bool {
+        return true
+    }
+
+    override var configureSheet: NSWindow? {
+        if settingsWindow == nil {
+            let settingsView = SettingsView(
+                initialC: store.c,
+                initialDx: store.dx,
+                initialDt: store.dt,
+                initialDamper: store.damper,
+                initialDisturbanceCooldownMin: store.disturbanceCooldownMin,
+                initialDisturbanceCooldownMax: store.disturbanceCooldownMax,
+                initialDisturbanceDensityMin: store.disturbanceDensityMin,
+                initialDisturbanceDensityMax: store.disturbanceDensityMax,
+                initialDisturbanceRadiusMin: store.disturbanceRadiusMin,
+                initialDisturbanceRadiusMax: store.disturbanceRadiusMax,
+                initialDisturbanceStrengthMin: store.disturbanceStrengthMin,
+                initialDisturbanceStrengthMax: store.disturbanceStrengthMax,
+                onSave: { newC, newDx, newDt, newDamper, newCooldownMin, newCooldownMax, newDensityMin, newDensityMax, newRadiusMin, newRadiusMax, newStrengthMin, newStrengthMax in
+                    self.store.c = newC
+                    self.store.dx = newDx
+                    self.store.dt = newDt
+                    self.store.damper = newDamper
+                    self.store.disturbanceCooldownMin = newCooldownMin
+                    self.store.disturbanceCooldownMax = newCooldownMax
+                    self.store.disturbanceDensityMin = newDensityMin
+                    self.store.disturbanceDensityMax = newDensityMax
+                    self.store.disturbanceRadiusMin = newRadiusMin
+                    self.store.disturbanceRadiusMax = newRadiusMax
+                    self.store.disturbanceStrengthMin = newStrengthMin
+                    self.store.disturbanceStrengthMax = newStrengthMax
+
+                    self.updateSettingsFromStore()
+                },
+                onDismiss: {
+                    if let window = self.settingsWindow {
+                        NSApp.endSheet(window)
+                    }
+                }
+            )
+            let hostingController = NSHostingController(rootView: settingsView)
+            let window = NSWindow(contentViewController: hostingController)
+            window.setContentSize(hostingController.view.intrinsicContentSize)
+            settingsWindow = window
+        }
+        return settingsWindow
+    }
+
+    override init?( frame: NSRect, isPreview: Bool) {
         super.init(frame: frame, isPreview: isPreview)
         
         self.wantsLayer = true
@@ -300,6 +354,8 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
     override func startAnimation() {
         super.startAnimation()
         
+        updateSettingsFromStore()
+        
         // recheck battery status when starting animation
         let currentBatteryStatus = checkBatteryPower()
         if currentBatteryStatus != isOnBatteryPower {
@@ -332,6 +388,18 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
         shouldBeAnimating = false
         mtkView?.isPaused = true
         mtkView?.isHidden = true
+    }
+    
+    private func updateSettingsFromStore() {
+        uniforms.c = store.c
+        uniforms.dx = store.dx
+        uniforms.dt = store.dt
+        uniforms.damper = store.damper
+
+        disturbanceCooldownRange = store.disturbanceCooldownMin...store.disturbanceCooldownMax
+        disturbanceDensityRange = store.disturbanceDensityMin...store.disturbanceDensityMax
+        disturbanceRadiusRange = store.disturbanceRadiusMin...store.disturbanceRadiusMax
+        disturbanceStrengthRange = store.disturbanceStrengthMin...store.disturbanceStrengthMax
     }
     
     // battery power checking function

@@ -39,14 +39,19 @@ This project is built with Swift and Metal. The main components are:
 - `WaveView.swift`: Main view controller that handles Metal setup and animation
 - `Shaders.metal`: Contains compute and fragment shaders for wave simulation and rendering
 
-## Roadmap
+## Planned Features
+
 *(not in any specific order)*
-- Look into the use of Metal Performance Shaders for optimization.
-- Add user preferences pane for parameters (speed, damping, etc.)
+
+- Usage of Metal Performance Shaders for optimization?
 - Fix the resource usage issue when screensaver is dismissed
 - Add a notarized release.
-
 
 ## Contribution
 
 Feel free to contribute through issues and/or pull requests. Email also works.
+
+## Acknowledgements
+
+- Apple Documentation
+- [JellyFish Screensaver](https://github.com/Eskils/JellyfishSaver.git)
