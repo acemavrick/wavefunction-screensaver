@@ -69,6 +69,30 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
 
     let store = Store.shared
 
+    private func cleanUp() {
+        // a paused view will not send any more drawing callbacks.
+        mtkView?.isPaused = true
+
+        // break the delegate cycle and remove from view hierarchy.
+        mtkView?.delegate = nil
+        mtkView?.removeFromSuperview()
+        mtkView = nil
+
+        // explicitly release all metal objects.
+        renderPipelineState = nil
+        computePipelineState = nil
+        copyPipelineState = nil
+        addDisturbancePipelineState = nil
+        
+        waveBufferP = nil
+        waveBufferC = nil
+        waveBufferN = nil
+        
+        commandQueue = nil
+        
+        exit(0)
+    }
+
     override var hasConfigureSheet: Bool {
         return true
     }
@@ -106,7 +130,7 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
                 },
                 onDismiss: {
                     if let window = self.settingsWindow {
-                        NSApp.endSheet(window)
+                        window.endSheet(window)
                     }
                 }
             )
@@ -278,77 +302,80 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
     }
     
     func draw(in view: MTKView) {
-        guard shouldBeAnimating else { return }
+        autoreleasepool {
+            guard shouldBeAnimating else { return }
 
-        guard let drawable = view.currentDrawable,
-              let renderPassDescriptor = view.currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer() else {
-            return
-        }
-        
-        uniforms.time += 1.0 / Float(self.animationTimeInterval == 0 ? 60 : (1/self.animationTimeInterval))
-
-        // Compute passes
-        if let computePass = commandBuffer.makeComputeCommandEncoder() {
-            let w = computePipelineState.threadExecutionWidth
-            let h = computePipelineState.maxTotalThreadsPerThreadgroup / w
-            let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
-            let threadsPerGrid = MTLSize(width: Int(view.drawableSize.width), height: Int(view.drawableSize.height), depth: 1)
+            guard let drawable = view.currentDrawable,
+                  let renderPassDescriptor = view.currentRenderPassDescriptor,
+                  let commandBuffer = commandQueue.makeCommandBuffer() else {
+                    cleanUp()
+                return
+            }
             
-            // Add disturbances
-            frameCounter += 1
-            if frameCounter >= disturbanceCooldown {
-                frameCounter = 0
-                
-                computePass.setComputePipelineState(addDisturbancePipelineState)
-                computePass.setBuffer(waveBufferC, offset: 0, index: 0)
-                computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 2)
+            uniforms.time += 1.0 / Float(self.animationTimeInterval == 0 ? 60 : (1/self.animationTimeInterval))
 
-                for _ in 0..<disturbanceDensity {
-                    var disturbance = DisturbanceUniforms(
-                        position: SIMD2<Float>(
-                            Float.random(in: 0..<Float(view.drawableSize.width)),
-                            Float.random(in: 0..<Float(view.drawableSize.height))
-                        ),
-                        radius: Float.random(in: disturbanceRadiusRange),
-                        strength: Float.random(in: disturbanceStrengthRange)
-                    )
-                    computePass.setBytes(&disturbance, length: MemoryLayout<DisturbanceUniforms>.stride, index: 1)
-                    computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+            // Compute passes
+            if let computePass = commandBuffer.makeComputeCommandEncoder() {
+                let w = computePipelineState.threadExecutionWidth
+                let h = computePipelineState.maxTotalThreadsPerThreadgroup / w
+                let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
+                let threadsPerGrid = MTLSize(width: Int(view.drawableSize.width), height: Int(view.drawableSize.height), depth: 1)
+                
+                // Add disturbances
+                frameCounter += 1
+                if frameCounter >= disturbanceCooldown {
+                    frameCounter = 0
+                    
+                    computePass.setComputePipelineState(addDisturbancePipelineState)
+                    computePass.setBuffer(waveBufferC, offset: 0, index: 0)
+                    computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 2)
+
+                    for _ in 0..<disturbanceDensity {
+                        var disturbance = DisturbanceUniforms(
+                            position: SIMD2<Float>(
+                                Float.random(in: 0..<Float(view.drawableSize.width)),
+                                Float.random(in: 0..<Float(view.drawableSize.height))
+                            ),
+                            radius: Float.random(in: disturbanceRadiusRange),
+                            strength: Float.random(in: disturbanceStrengthRange)
+                        )
+                        computePass.setBytes(&disturbance, length: MemoryLayout<DisturbanceUniforms>.stride, index: 1)
+                        computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+                    }
+
+                    // decide next cooldown & density
+                    disturbanceCooldown = Int.random(in: disturbanceCooldownRange)
+                    disturbanceDensity = Int.random(in: disturbanceDensityRange)
                 }
 
-                // decide next cooldown & density
-                disturbanceCooldown = Int.random(in: disturbanceCooldownRange)
-                disturbanceDensity = Int.random(in: disturbanceDensityRange)
+                // Wave simulation
+                computePass.setComputePipelineState(computePipelineState)
+                computePass.setBuffer(waveBufferP, offset: 0, index: 0)
+                computePass.setBuffer(waveBufferC, offset: 0, index: 1)
+                computePass.setBuffer(waveBufferN, offset: 0, index: 2)
+                computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 3)
+                computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+                
+                // Copy wave buffers for next frame
+                computePass.setComputePipelineState(copyPipelineState)
+                // Buffers are already set from previous kernel
+                computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+                
+                computePass.endEncoding()
             }
 
-            // Wave simulation
-            computePass.setComputePipelineState(computePipelineState)
-            computePass.setBuffer(waveBufferP, offset: 0, index: 0)
-            computePass.setBuffer(waveBufferC, offset: 0, index: 1)
-            computePass.setBuffer(waveBufferN, offset: 0, index: 2)
-            computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 3)
-            computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-            
-            // Copy wave buffers for next frame
-            computePass.setComputePipelineState(copyPipelineState)
-            // Buffers are already set from previous kernel
-            computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-            
-            computePass.endEncoding()
-        }
+            // Render pass
+            if let renderPass = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) {
+                renderPass.setRenderPipelineState(renderPipelineState)
+                renderPass.setFragmentBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 0)
+                renderPass.setFragmentBuffer(waveBufferC, offset: 0, index: 1) // Render the current wave state
+                renderPass.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                renderPass.endEncoding()
+            }
 
-        // Render pass
-        if let renderPass = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) {
-            renderPass.setRenderPipelineState(renderPipelineState)
-            renderPass.setFragmentBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 0)
-            renderPass.setFragmentBuffer(waveBufferC, offset: 0, index: 1) // Render the current wave state
-            renderPass.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-            renderPass.endEncoding()
+            commandBuffer.present(drawable)
+            commandBuffer.commit()
         }
-
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
     }
     
     override func startAnimation() {
@@ -388,6 +415,7 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
         shouldBeAnimating = false
         mtkView?.isPaused = true
         mtkView?.isHidden = true
+        cleanUp()
     }
     
     private func updateSettingsFromStore() {
