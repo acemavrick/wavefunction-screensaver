@@ -81,21 +81,6 @@ kernel void addDisturbance(texture2d<float, access::read_write> u_c [[texture(0)
     }
 }
 
-kernel void extractHighlights(texture2d<float, access::read> source [[texture(0)]],
-                              texture2d<float, access::write> destination [[texture(1)]],
-                              uint2 gid [[thread_position_in_grid]]) {
-
-    if (gid.x >= source.get_width() || gid.y >= source.get_height()) return;
-
-    float height = source.read(gid).x;
-    
-    // thresholding logic - only keep values that will be bright
-    float threshold = 0.1;
-    float bright = abs(height) > threshold ? height : 0.0;
-    
-    destination.write(float4(bright, 0.0, 0.0, 0.0), gid);
-}
-
 
 // map wave height to color
 float3 getColorForHeight(float height) {
@@ -135,23 +120,24 @@ float3 filmicToneMap(float3 color) {
 }
 
 fragment float4 waveFragment(VertexOut in [[stage_in]],
-                             texture2d<float, access::read> waveTexture [[texture(0)]],
-                             texture2d<float, access::read> bloomTexture [[texture(1)]])
+                             texture2d<float, access::sample> waveTexture [[texture(0)]],
+                             texture2d<float, access::sample> edgeGlowTexture [[texture(1)]])
 {
-    uint2 loc = uint2(in.position.xy);
-    if (loc.x >= waveTexture.get_width() || loc.y >= waveTexture.get_height()) {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
+    constexpr sampler s(mag_filter::linear, min_filter::linear);
+    float2 uv = in.position.xy / float2(waveTexture.get_width(), waveTexture.get_height());
 
-    float waveHeight = waveTexture.read(loc).r;
+    float waveHeight = waveTexture.sample(s, uv).r;
     float3 baseColor = getColorForHeight(waveHeight);
 
-    // sample the pre-blurred bloom texture and color it
-    float bloomAmount = bloomTexture.read(loc).r;
-    float3 bloomColor = getColorForHeight(bloomAmount) * 1.5; // bloom intensity can be tweaked
+    // Get the edge intensity from the blurred sobel texture.
+    float edgeIntensity = edgeGlowTexture.sample(s, uv).r;
 
-    // combine and finalize color
-    float3 finalColor = baseColor + bloomColor;
+    float3 glowColor = float3(1.0, 1.0, 1.0);
+
+    // Combine base color with the additive edge glow.
+    float3 finalColor = baseColor + (glowColor * edgeIntensity * .4);
+    
+    // apply filmic tone mapping for a more pleasing, cinematic result
     finalColor = filmicToneMap(finalColor);
     
     return float4(finalColor, 1.0);

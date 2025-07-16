@@ -30,9 +30,9 @@ class WaveRenderer {
     private var renderPipelineState: MTLRenderPipelineState!
     private var updateWaveStatePipelineState: MTLComputePipelineState!
     private var addDisturbancePipelineState: MTLComputePipelineState!
-    private var extractHighlightsPipelineState: MTLComputePipelineState!
 
     // MPS Kernels
+    private var sobel: MPSImageSobel!
     private var convolution: MPSImageConvolution!
     private var gaussianBlur: MPSImageGaussianBlur!
 
@@ -41,8 +41,8 @@ class WaveRenderer {
     private var waveTextureC: MTLTexture! // current state
     private var waveTextureN: MTLTexture! // next state
     private var laplacianTexture: MTLTexture!
-    private var highlightsTexture: MTLTexture!
-    private var blurredHighlightsTexture: MTLTexture!
+    private var sobelTexture: MTLTexture!
+    private var blurredSobelTexture: MTLTexture!
 
     private var uniforms = WaveUniforms(c0: .zero, c1: .zero, c2: .zero, c3: .zero, c4: .zero, c5: .zero, c6: .zero)
 
@@ -80,7 +80,12 @@ class WaveRenderer {
                                           weights: convWeights)
         convolution.edgeMode = .zero
 
-        gaussianBlur = MPSImageGaussianBlur(device: device, sigma: 5.0)
+        sobel = MPSImageSobel(device: device)
+        sobel.edgeMode = .clamp
+
+        // Adjust the `sigma` value here to control the blur radius.
+        // Larger sigma = more blurry/glowy. Smaller sigma = sharper.
+        gaussianBlur = MPSImageGaussianBlur(device: device, sigma: 1.3)
         gaussianBlur.edgeMode = .clamp
     }
     
@@ -132,12 +137,6 @@ class WaveRenderer {
                 return false
             }
             addDisturbancePipelineState = try device.makeComputePipelineState(function: disturbanceFunction)
-
-            guard let highlightsFunction = library.makeFunction(name: "extractHighlights") else {
-                print("Could not find 'extractHighlights' function.")
-                return false
-            }
-            extractHighlightsPipelineState = try device.makeComputePipelineState(function: highlightsFunction)
         } catch {
             print("Could not create compute pipeline state: \(error)")
             return false
@@ -150,15 +149,15 @@ class WaveRenderer {
         renderPipelineState = nil
         updateWaveStatePipelineState = nil
         addDisturbancePipelineState = nil
-        extractHighlightsPipelineState = nil
+        sobel = nil
         convolution = nil
         gaussianBlur = nil
         waveTextureP = nil
         waveTextureC = nil
         waveTextureN = nil
         laplacianTexture = nil
-        highlightsTexture = nil
-        blurredHighlightsTexture = nil
+        sobelTexture = nil
+        blurredSobelTexture = nil
         commandQueue = nil
     }
 
@@ -179,11 +178,19 @@ class WaveRenderer {
         waveTextureC = device.makeTexture(descriptor: descriptor)
         waveTextureN = device.makeTexture(descriptor: descriptor)
         laplacianTexture = device.makeTexture(descriptor: descriptor)
-        highlightsTexture = device.makeTexture(descriptor: descriptor)
-        blurredHighlightsTexture = device.makeTexture(descriptor: descriptor)
+
+        // The Sobel filter will write the gradient magnitude to a single-channel texture.
+        let sobelDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r32Float,
+                                                                       width: width,
+                                                                       height: height,
+                                                                       mipmapped: false)
+        sobelDescriptor.usage = [.shaderRead, .shaderWrite]
+        sobelDescriptor.storageMode = .private
+        sobelTexture = device.makeTexture(descriptor: sobelDescriptor)
+        blurredSobelTexture = device.makeTexture(descriptor: sobelDescriptor)
 
         // Clear textures to zero initially
-        let zeroData = [Float](repeating: 0, count: width * height)
+        let zeroData = [Float](repeating: 0, count: width * height * 4) // Allocate enough for 4 channels to be safe
         let bytesPerRow = MemoryLayout<Float>.stride * width
 
         guard let cmdBuffer = commandQueue.makeCommandBuffer(),
@@ -261,24 +268,21 @@ class WaveRenderer {
                 computePass.setTexture(waveTextureN, index: 3)
                 computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 0)
                 computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-
-                // 3. Extract highlights for bloom
-                computePass.setComputePipelineState(extractHighlightsPipelineState)
-                computePass.setTexture(waveTextureC, index: 0)
-                computePass.setTexture(highlightsTexture, index: 1)
-                computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
                 
                 computePass.endEncoding()
             }
             
-            // 4. Blur highlights using MPS
-            gaussianBlur.encode(commandBuffer: commandBuffer, sourceTexture: highlightsTexture, destinationTexture: blurredHighlightsTexture)
+            // 3. Detect edges using Sobel
+            sobel.encode(commandBuffer: commandBuffer, sourceTexture: waveTextureC, destinationTexture: sobelTexture)
+
+            // 4. Blur the edges using MPS
+            gaussianBlur.encode(commandBuffer: commandBuffer, sourceTexture: sobelTexture, destinationTexture: blurredSobelTexture)
 
             // 5. Render pass (compositing)
             if let renderPass = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) {
                 renderPass.setRenderPipelineState(renderPipelineState)
                 renderPass.setFragmentTexture(waveTextureC, index: 0)
-                renderPass.setFragmentTexture(blurredHighlightsTexture, index: 1)
+                renderPass.setFragmentTexture(blurredSobelTexture, index: 1)
                 renderPass.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
                 renderPass.endEncoding()
             }
