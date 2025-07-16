@@ -1,5 +1,6 @@
 import Foundation
 import MetalKit
+import MetalPerformanceShaders
 
 // A struct to match the layout of our uniforms in the Metal shader.
 struct WaveUniforms {
@@ -24,18 +25,24 @@ struct DisturbanceUniforms {
 class WaveRenderer {
     private var device: MTLDevice
     private var commandQueue: MTLCommandQueue!
-    private var waveHeap: MTLHeap!
 
     // Pipelines
     private var renderPipelineState: MTLRenderPipelineState!
-    private var computePipelineState: MTLComputePipelineState!
-    private var copyPipelineState: MTLComputePipelineState!
+    private var updateWaveStatePipelineState: MTLComputePipelineState!
     private var addDisturbancePipelineState: MTLComputePipelineState!
+    private var extractHighlightsPipelineState: MTLComputePipelineState!
 
-    // Buffers
-    private var waveBufferP: MTLBuffer! // previous state
-    private var waveBufferC: MTLBuffer! // current state
-    private var waveBufferN: MTLBuffer! // next state
+    // MPS Kernels
+    private var convolution: MPSImageConvolution!
+    private var gaussianBlur: MPSImageGaussianBlur!
+
+    // Textures for wave simulation and effects
+    private var waveTextureP: MTLTexture! // previous state
+    private var waveTextureC: MTLTexture! // current state
+    private var waveTextureN: MTLTexture! // next state
+    private var laplacianTexture: MTLTexture!
+    private var highlightsTexture: MTLTexture!
+    private var blurredHighlightsTexture: MTLTexture!
 
     private var uniforms = WaveUniforms(c0: .zero, c1: .zero, c2: .zero, c3: .zero, c4: .zero, c5: .zero, c6: .zero)
 
@@ -57,9 +64,26 @@ class WaveRenderer {
 
     func setup(pixelFormat: MTLPixelFormat) -> Bool {
         commandQueue = device.makeCommandQueue()
+        setupMPSKernels()
         return setupPipelines(pixelFormat: pixelFormat)
     }
 
+    private func setupMPSKernels() {
+        let convWeights: [Float] = [
+            0, 1, 0,
+            1,-4, 1,
+            0, 1, 0
+        ]
+        convolution = MPSImageConvolution(device: device,
+                                          kernelWidth: 3,
+                                          kernelHeight: 3,
+                                          weights: convWeights)
+        convolution.edgeMode = .zero
+
+        gaussianBlur = MPSImageGaussianBlur(device: device, sigma: 5.0)
+        gaussianBlur.edgeMode = .clamp
+    }
+    
     private func setupPipelines(pixelFormat: MTLPixelFormat) -> Bool {
         let library: MTLLibrary
         do {
@@ -97,35 +121,25 @@ class WaveRenderer {
 
         // Create compute pipelines
         do {
-            guard let computeFunction = library.makeFunction(name: "waveCompute") else {
-                print("Could not find 'waveCompute' function.")
+            guard let updateFunction = library.makeFunction(name: "updateWaveState") else {
+                print("Could not find 'updateWaveState' function.")
                 return false
             }
-            computePipelineState = try device.makeComputePipelineState(function: computeFunction)
-        } catch {
-            print("Could not create 'waveCompute' pipeline state: \(error)")
-            return false
-        }
+            updateWaveStatePipelineState = try device.makeComputePipelineState(function: updateFunction)
 
-        do {
-            guard let copyFunction = library.makeFunction(name: "waveCopy") else {
-                print("Could not find 'waveCopy' function.")
-                return false
-            }
-            copyPipelineState = try device.makeComputePipelineState(function: copyFunction)
-        } catch {
-            print("Could not create 'waveCopy' pipeline state: \(error)")
-            return false
-        }
-
-        do {
             guard let disturbanceFunction = library.makeFunction(name: "addDisturbance") else {
                 print("Could not find 'addDisturbance' function.")
                 return false
             }
             addDisturbancePipelineState = try device.makeComputePipelineState(function: disturbanceFunction)
+
+            guard let highlightsFunction = library.makeFunction(name: "extractHighlights") else {
+                print("Could not find 'extractHighlights' function.")
+                return false
+            }
+            extractHighlightsPipelineState = try device.makeComputePipelineState(function: highlightsFunction)
         } catch {
-            print("Could not create 'addDisturbance' pipeline state: \(error)")
+            print("Could not create compute pipeline state: \(error)")
             return false
         }
 
@@ -133,61 +147,63 @@ class WaveRenderer {
     }
 
     func cleanUp() {
-        // explicitly release all metal objects.
         renderPipelineState = nil
-        computePipelineState = nil
-        copyPipelineState = nil
+        updateWaveStatePipelineState = nil
         addDisturbancePipelineState = nil
-        
-        waveBufferP = nil
-        waveBufferC = nil
-        waveBufferN = nil
-        
-        waveHeap = nil
+        extractHighlightsPipelineState = nil
+        convolution = nil
+        gaussianBlur = nil
+        waveTextureP = nil
+        waveTextureC = nil
+        waveTextureN = nil
+        laplacianTexture = nil
+        highlightsTexture = nil
+        blurredHighlightsTexture = nil
         commandQueue = nil
     }
 
     func drawableSizeWillChange(size: CGSize) {
         let width = Int(size.width)
         let height = Int(size.height)
-        let bufferSize = width * height * MemoryLayout<Float>.stride
         
-        if bufferSize > 0 {
-            let options: MTLResourceOptions = .storageModePrivate
-            
-            let sizeAndAlign = device.heapBufferSizeAndAlign(length: bufferSize, options: options)
-            let alignedBufferSize = sizeAndAlign.size
-            
-            let heapDescriptor = MTLHeapDescriptor()
-            heapDescriptor.size = alignedBufferSize * 3
-            heapDescriptor.storageMode = .private
-            
-            guard let heap = device.makeHeap(descriptor: heapDescriptor) else {
-                fatalError("Could not create heap")
-            }
-            self.waveHeap = heap
-            
-            waveBufferP = heap.makeBuffer(length: bufferSize, options: options)
-            waveBufferC = heap.makeBuffer(length: bufferSize, options: options)
-            waveBufferN = heap.makeBuffer(length: bufferSize, options: options)
-            
-            // Create an initial state on the CPU
-            let initialData = [Float](repeating: 0.0, count: width * height)
-            
-            // Create a temporary shared buffer to copy the initial data to the GPU.
-            let initialDataSize = initialData.count * MemoryLayout<Float>.stride
-            let initialBuffer = device.makeBuffer(bytes: initialData, length: initialDataSize, options: .storageModeShared)
+        guard width > 0, height > 0 else { return }
 
-            // Copy the initial state to all three GPU buffers.
-            guard let commandBuffer = commandQueue.makeCommandBuffer(), let blitEncoder = commandBuffer.makeBlitCommandEncoder() else { return }
-            blitEncoder.copy(from: initialBuffer!, sourceOffset: 0, to: waveBufferP, destinationOffset: 0, size: initialDataSize)
-            blitEncoder.copy(from: initialBuffer!, sourceOffset: 0, to: waveBufferC, destinationOffset: 0, size: initialDataSize)
-            blitEncoder.copy(from: initialBuffer!, sourceOffset: 0, to: waveBufferN, destinationOffset: 0, size: initialDataSize)
-            blitEncoder.endEncoding()
-            commandBuffer.commit()
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r32Float,
+                                                                  width: width,
+                                                                  height: height,
+                                                                  mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .private
+
+        waveTextureP = device.makeTexture(descriptor: descriptor)
+        waveTextureC = device.makeTexture(descriptor: descriptor)
+        waveTextureN = device.makeTexture(descriptor: descriptor)
+        laplacianTexture = device.makeTexture(descriptor: descriptor)
+        highlightsTexture = device.makeTexture(descriptor: descriptor)
+        blurredHighlightsTexture = device.makeTexture(descriptor: descriptor)
+
+        // Clear textures to zero initially
+        let zeroData = [Float](repeating: 0, count: width * height)
+        let bytesPerRow = MemoryLayout<Float>.stride * width
+
+        guard let cmdBuffer = commandQueue.makeCommandBuffer(),
+              let blitEncoder = cmdBuffer.makeBlitCommandEncoder(),
+              let tempBuffer = device.makeBuffer(bytes: zeroData, length: bytesPerRow * height, options: .storageModeShared)
+        else { return }
+
+        let sourceSize = MTLSize(width: width, height: height, depth: 1)
+
+        blitEncoder.copy(from: tempBuffer, sourceOffset: 0, sourceBytesPerRow: bytesPerRow, sourceBytesPerImage: 0, sourceSize: sourceSize,
+                         to: waveTextureP, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
+        blitEncoder.copy(from: tempBuffer, sourceOffset: 0, sourceBytesPerRow: bytesPerRow, sourceBytesPerImage: 0, sourceSize: sourceSize,
+                         to: waveTextureC, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
+        blitEncoder.copy(from: tempBuffer, sourceOffset: 0, sourceBytesPerRow: bytesPerRow, sourceBytesPerImage: 0, sourceSize: sourceSize,
+                         to: waveTextureN, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
+
+        blitEncoder.endEncoding()
+        cmdBuffer.commit()
             
-            uniforms.resolution = SIMD2<Float>(Float(width), Float(height))
-        }
+        uniforms.resolution = SIMD2<Float>(Float(width), Float(height))
     }
 
     func draw(in view: MTKView) {
@@ -201,67 +217,80 @@ class WaveRenderer {
             
             uniforms.time += 1.0 / Float(self.animationTimeInterval == 0 ? 60 : (1/self.animationTimeInterval))
 
+            let w = 16
+            let h = 16
+            let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
+            let threadsPerGrid = MTLSize(width: Int(view.drawableSize.width), height: Int(view.drawableSize.height), depth: 1)
+
             // Compute passes
             if let computePass = commandBuffer.makeComputeCommandEncoder() {
-                let w = computePipelineState.threadExecutionWidth
-                let h = computePipelineState.maxTotalThreadsPerThreadgroup / w
-                let threadsPerThreadgroup = MTLSize(width: w, height: h, depth: 1)
-                let threadsPerGrid = MTLSize(width: Int(view.drawableSize.width), height: Int(view.drawableSize.height), depth: 1)
-                
                 // Add disturbances
                 frameCounter += 1
                 if frameCounter >= disturbanceCooldown {
                     frameCounter = 0
                     
                     computePass.setComputePipelineState(addDisturbancePipelineState)
-                    computePass.setBuffer(waveBufferC, offset: 0, index: 0)
-                    computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 2)
-
+                    computePass.setTexture(waveTextureC, index: 0)
+                    computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 1)
+                    
                     for _ in 0..<disturbanceDensity {
                         var disturbance = DisturbanceUniforms(
-                            position: SIMD2<Float>(
-                                Float.random(in: 0..<Float(view.drawableSize.width)),
-                                Float.random(in: 0..<Float(view.drawableSize.height))
-                            ),
+                            position: SIMD2<Float>(Float.random(in: 0..<Float(view.drawableSize.width)),
+                                                   Float.random(in: 0..<Float(view.drawableSize.height))),
                             radius: Float.random(in: disturbanceRadiusRange),
                             strength: Float.random(in: disturbanceStrengthRange)
                         )
-                        computePass.setBytes(&disturbance, length: MemoryLayout<DisturbanceUniforms>.stride, index: 1)
+                        computePass.setBytes(&disturbance, length: MemoryLayout<DisturbanceUniforms>.stride, index: 0)
                         computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
                     }
-
-                    // decide next cooldown & density
                     disturbanceCooldown = Int.random(in: disturbanceCooldownRange)
                     disturbanceDensity = Int.random(in: disturbanceDensityRange)
                 }
-
-                // Wave simulation
-                computePass.setComputePipelineState(computePipelineState)
-                computePass.setBuffer(waveBufferP, offset: 0, index: 0)
-                computePass.setBuffer(waveBufferC, offset: 0, index: 1)
-                computePass.setBuffer(waveBufferN, offset: 0, index: 2)
-                computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 3)
+                computePass.endEncoding()
+            }
+            
+            // 1. Compute Laplacian using MPS
+            convolution.encode(commandBuffer: commandBuffer, sourceTexture: waveTextureC, destinationTexture: laplacianTexture)
+            
+            // 2. Update wave state with custom kernel
+            if let computePass = commandBuffer.makeComputeCommandEncoder() {
+                computePass.setComputePipelineState(updateWaveStatePipelineState)
+                computePass.setTexture(waveTextureP, index: 0)
+                computePass.setTexture(waveTextureC, index: 1)
+                computePass.setTexture(laplacianTexture, index: 2)
+                computePass.setTexture(waveTextureN, index: 3)
+                computePass.setBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 0)
                 computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-                
-                // Copy wave buffers for next frame
-                computePass.setComputePipelineState(copyPipelineState)
-                // Buffers are already set from previous kernel
+
+                // 3. Extract highlights for bloom
+                computePass.setComputePipelineState(extractHighlightsPipelineState)
+                computePass.setTexture(waveTextureC, index: 0)
+                computePass.setTexture(highlightsTexture, index: 1)
                 computePass.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
                 
                 computePass.endEncoding()
             }
+            
+            // 4. Blur highlights using MPS
+            gaussianBlur.encode(commandBuffer: commandBuffer, sourceTexture: highlightsTexture, destinationTexture: blurredHighlightsTexture)
 
-            // Render pass
+            // 5. Render pass (compositing)
             if let renderPass = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) {
                 renderPass.setRenderPipelineState(renderPipelineState)
-                renderPass.setFragmentBytes(&uniforms, length: MemoryLayout<WaveUniforms>.stride, index: 0)
-                renderPass.setFragmentBuffer(waveBufferC, offset: 0, index: 1) // Render the current wave state
+                renderPass.setFragmentTexture(waveTextureC, index: 0)
+                renderPass.setFragmentTexture(blurredHighlightsTexture, index: 1)
                 renderPass.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
                 renderPass.endEncoding()
             }
 
             commandBuffer.present(drawable)
             commandBuffer.commit()
+            
+            // swap textures for next frame
+            let temp = waveTextureP
+            waveTextureP = waveTextureC
+            waveTextureC = waveTextureN
+            waveTextureN = temp
         }
     }
     
