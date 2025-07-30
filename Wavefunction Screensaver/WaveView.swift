@@ -56,7 +56,8 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
                 initialDisturbanceRadiusMax: store.disturbanceRadiusMax,
                 initialDisturbanceStrengthMin: store.disturbanceStrengthMin,
                 initialDisturbanceStrengthMax: store.disturbanceStrengthMax,
-                onSave: { newC, newDx, newDt, newDamper, newCooldownMin, newCooldownMax, newDensityMin, newDensityMax, newRadiusMin, newRadiusMax, newStrengthMin, newStrengthMax in
+                initialBatterySaverMode: store.batterySaverMode,
+                onSave: { newC, newDx, newDt, newDamper, newCooldownMin, newCooldownMax, newDensityMin, newDensityMax, newRadiusMin, newRadiusMax, newStrengthMin, newStrengthMax, newBatterySaverMode in
                     self.store.c = newC
                     self.store.dx = newDx
                     self.store.dt = newDt
@@ -69,6 +70,7 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
                     self.store.disturbanceRadiusMax = newRadiusMax
                     self.store.disturbanceStrengthMin = newStrengthMin
                     self.store.disturbanceStrengthMax = newStrengthMax
+                    self.store.batterySaverMode = newBatterySaverMode
 
                     self.updateSettingsFromStore()
                 },
@@ -99,7 +101,7 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
             return
         }
         
-        if isOnBatteryPower {
+        if isOnBatteryPower && store.batterySaverMode {
             // use low-power mode with simple background
             self.layer?.backgroundColor = NSColor.systemBlue.cgColor
             return
@@ -165,7 +167,7 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
         if currentBatteryStatus != isOnBatteryPower {
             isOnBatteryPower = currentBatteryStatus
             
-            if isOnBatteryPower {
+            if isOnBatteryPower && store.batterySaverMode {
                 // switch to battery mode
                 mtkView?.isPaused = true
                 mtkView?.isHidden = true
@@ -181,7 +183,7 @@ class WaveView: ScreenSaverView, MTKViewDelegate {
             }
         }
         
-        guard !isOnBatteryPower else { return }
+        guard !(isOnBatteryPower && store.batterySaverMode) else { return }
         
         if mtkView == nil {
             if let device = MTLCreateSystemDefaultDevice() {
