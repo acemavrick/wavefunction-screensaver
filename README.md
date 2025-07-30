@@ -13,7 +13,6 @@ A macOS screensaver that simulates wave propagation using Metal.
 ## Requirements
 
 - A Mac with Metal support
-- Xcode (for now)
 
 ## Important Notes
 
@@ -23,6 +22,25 @@ After some time, this may severely slow down the computer and therefore the proc
 Frankly, I am not sure if there is a fix to this: it seems to be an inherent problem with Apple's handling of third party screensavers.
 - If you experience any graphical glitches or performance issues, please file an issue or let me know.
 - The settings/options pane may or may not work: this issue is being looked into.
+
+## Solid Color Screens
+
+A system for communicating basic issues/setups is built into the screensaver through the use of solid colored screens.
+
+Normal:
+
+- **Pink Screen**: Shown in preview mode (the little window in Settings). Shouldn't be shown when actually in use.
+- **Blue Screen**: Battery saver mode is active (when on battery power). The screensaver just doesn't render to save resources and minimize energy usage.
+
+Issues:
+
+- **Red Screen**: Metal is not supported on your device
+- **Yellow Screen**: Metal setup failed. This *shouldn't* show up, but if it does, try:
+    1. `killall WallpaperAgent` (in Terminal)
+    2. Restarting your computer
+    3. Reinstalling. Right click on the screensaver in System Settings, delete it, then download the release again.
+
+    If nothing works, reach out to me.
 
 ## Installation
 
