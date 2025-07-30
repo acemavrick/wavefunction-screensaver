@@ -45,69 +45,42 @@ vertex VertexOut waveVertex(uint vertexID [[vertex_id]]) {
     return out;
 }
 
-// function to get a value from the Buffer, with boundary conditions
-float get(device float2* buffer, int x, int y, float2 dims) {
-    if (x < 0 || y < 0 || x >= dims.x || y >= dims.y) {
-        return 0.0;
-    }
-    // .x is wave height, .y is whether the cell is active (1.0) or blocked (0.0)
-    return buffer[int(x + y * dims.x)].x * step(1.0, buffer[int(x + y * dims.x)].y);
-}
+kernel void updateWaveState(texture2d<float, access::read> u_p [[texture(0)]],
+                            texture2d<float, access::read> u_c [[texture(1)]],
+                            texture2d<float, access::read> laplacian [[texture(2)]],
+                            texture2d<float, access::write> u_n [[texture(3)]],
+                            constant WaveUniforms &uniforms [[buffer(0)]],
+                            uint2 gid [[thread_position_in_grid]]) {
 
-kernel void waveCompute(device float2* u_p [[buffer(0)]],
-                        device float2* u_c [[buffer(1)]],
-                        device float2* u_n [[buffer(2)]],
-                        constant WaveUniforms &uniforms [[buffer(3)]],
-                        uint2 gid [[thread_position_in_grid]]) {
-    
-    uint index = gid.y * uint(uniforms.resolution.x) + gid.x;
-    if (index >= uint(uniforms.resolution.x * uniforms.resolution.y)) return;
-    
-    // if y is 0, it is a blocked cell, so do nothing
-    if (u_c[index].y < 1.0) {
-        u_n[index] = float2(0.0, 0.0);
-        return;
-    }
-    
+    if (gid.x >= u_n.get_width() || gid.y >= u_n.get_height()) return;
+
+    float laplacianVal = laplacian.read(gid).x;
+    float uc = u_c.read(gid).x;
+    float up = u_p.read(gid).x;
+
     float laplacianMultiplier = uniforms.dx > 0.0 ? pow(uniforms.dt * uniforms.c / uniforms.dx, 2.0) : 0.0;
-    float laplacian = laplacianMultiplier * (get(u_c, gid.x - 1, gid.y, uniforms.resolution) +
-                                            get(u_c, gid.x + 1, gid.y, uniforms.resolution) +
-                                            get(u_c, gid.x, gid.y - 1, uniforms.resolution) +
-                                            get(u_c, gid.x, gid.y + 1, uniforms.resolution) - 4.0 * u_c[index].x);
-    
-    float val = laplacian + 2.0 * u_c[index].x - u_p[index].x;
+
+    float val = laplacianMultiplier * laplacianVal + 2.0 * uc - up;
     val *= uniforms.damper;
-    u_n[index].x = val;
-    u_n[index].y = 1.0; // keep it active
+
+    u_n.write(float4(val, 0.0, 0.0, 0.0), gid);
 }
 
-kernel void waveCopy(device float2* u_p [[buffer(0)]],
-                     device float2* u_c [[buffer(1)]],
-                     device float2* u_n [[buffer(2)]],
-                     constant WaveUniforms &uniforms [[buffer(3)]],
-                     uint2 gid [[thread_position_in_grid]]) {
-
-    uint index = gid.y * uint(uniforms.resolution.x) + gid.x;
-    if (index >= uint(uniforms.resolution.x * uniforms.resolution.y)) return;
-    
-    u_p[index] = u_c[index];
-    u_c[index] = u_n[index];
-}
-
-kernel void addDisturbance(device float2* u_c [[buffer(0)]],
-                           constant DisturbanceUniforms &disturbance [[buffer(1)]],
-                           constant WaveUniforms &uniforms [[buffer(2)]],
+kernel void addDisturbance(texture2d<float, access::read_write> u_c [[texture(0)]],
+                           constant DisturbanceUniforms &disturbance [[buffer(0)]],
+                           constant WaveUniforms &uniforms [[buffer(1)]],
                            uint2 gid [[thread_position_in_grid]]) {
-    
-    uint index = gid.y * uint(uniforms.resolution.x) + gid.x;
-    if (index >= uint(uniforms.resolution.x * uniforms.resolution.y)) return;
-    
+
+    if (gid.x >= u_c.get_width() || gid.y >= u_c.get_height()) return;
+
     float dist = distance(float2(gid), disturbance.position);
     if (dist < disturbance.radius) {
+        float current_val = u_c.read(gid).x;
         float pulse = disturbance.strength * (0.5 * (cos(dist / disturbance.radius * M_PI_F) + 1.0));
-        u_c[index].x += pulse;
+        u_c.write(float4(current_val + pulse, 0.0, 0.0, 0.0), gid);
     }
 }
+
 
 // map wave height to color
 float3 getColorForHeight(float height) {
@@ -147,68 +120,22 @@ float3 filmicToneMap(float3 color) {
 }
 
 fragment float4 waveFragment(VertexOut in [[stage_in]],
-                             constant WaveUniforms &uniforms [[buffer(0)]],
-                             device const float2* u_c [[buffer(1)]])
+                             texture2d<float, access::sample> waveTexture [[texture(0)]],
+                             texture2d<float, access::sample> edgeGlowTexture [[texture(1)]])
 {
-    uint2 loc = uint2(in.position.xy);
-    uint width = uint(uniforms.resolution.x);
-    uint height = uint(uniforms.resolution.y);
-    
-    if (loc.x >= width || loc.y >= height) {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
-    
-    uint index = loc.y * width + loc.x;
-    float2 value = u_c[index];
-    float waveHeight = value.x;
-    float isActive = value.y;
+    constexpr sampler s(mag_filter::linear, min_filter::linear);
+    float2 uv = in.position.xy / float2(waveTexture.get_width(), waveTexture.get_height());
 
-    if (isActive < 1.0) {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
-
-    // get base color of the current pixel
+    float waveHeight = waveTexture.sample(s, uv).r;
     float3 baseColor = getColorForHeight(waveHeight);
 
-    // additive bloom/glow effect
-    // sample in a cross pattern (+)
-    float3 bloom = float3(0.0);
-    const int bloomRadius = 4;
-    const float bloomFalloff = 10.0; // falloff
-    
-    // horizontal samples
-    for (int i = -bloomRadius; i <= bloomRadius; ++i) {
-        if (i == 0) continue;
-        int2 sampleLoc = int2(loc) + int2(i, 0);
-        if (sampleLoc.x >= 0 && sampleLoc.x < width) {
-            uint sampleIndex = sampleLoc.y * width + sampleLoc.x;
-            if (u_c[sampleIndex].y >= 1.0) {
-                float sampleHeight = u_c[sampleIndex].x;
-                float weight = exp(-pow(float(i) / float(bloomRadius), 2.0) * bloomFalloff);
-                bloom += getColorForHeight(sampleHeight) * weight;
-            }
-        }
-    }
-    
-    // Vertical samples
-    for (int j = -bloomRadius; j <= bloomRadius; ++j) {
-        if (j == 0) continue;
-        int2 sampleLoc = int2(loc) + int2(0, j);
-        if (sampleLoc.y >= 0 && sampleLoc.y < height) {
-            uint sampleIndex = sampleLoc.y * width + sampleLoc.x;
-            if (u_c[sampleIndex].y >= 1.0) {
-                float sampleHeight = u_c[sampleIndex].x;
-                float weight = exp(-pow(float(j) / float(bloomRadius), 2.0) * bloomFalloff);
-                bloom += getColorForHeight(sampleHeight) * weight;
-            }
-        }
-    }
-    
-    // normalize bloom by an approximate weight
-    bloom /= (float(bloomRadius) * 1.5);
+    // Get the edge intensity from the blurred sobel texture.
+    float edgeIntensity = edgeGlowTexture.sample(s, uv).r;
 
-    // combine and finalize color
-    float3 finalColor = baseColor + bloom;
+    float3 glowColor = float3(1.0, 1.0, 1.0);
+
+    // Combine base color with the additive edge glow.
+    float3 finalColor = baseColor + (glowColor * edgeIntensity * .4);
     
     // apply filmic tone mapping for a more pleasing, cinematic result
     finalColor = filmicToneMap(finalColor);

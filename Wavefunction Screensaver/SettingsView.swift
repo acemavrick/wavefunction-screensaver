@@ -9,7 +9,8 @@ import SwiftUI
 
 struct SettingsView: View {
   var onDismiss: () -> Void
-  var onSave: (Float, Float, Float, Float, Int, Int, Int, Int, Float, Float, Float, Float) -> Void
+  var onSave:
+    (Float, Float, Float, Float, Int, Int, Int, Int, Float, Float, Float, Float, Bool) -> Void
 
   // Default values passed from WaveView
   let defaultC: Float
@@ -24,6 +25,7 @@ struct SettingsView: View {
   let defaultDisturbanceRadiusMax: Float
   let defaultDisturbanceStrengthMin: Float
   let defaultDisturbanceStrengthMax: Float
+  let defaultBatterySaverMode: Bool
 
   @State var c: Float
   @State var dx: Float
@@ -37,6 +39,7 @@ struct SettingsView: View {
   @State var disturbanceRadiusMax: Float
   @State var disturbanceStrengthMin: Float
   @State var disturbanceStrengthMax: Float
+  @State var batterySaverMode: Bool
 
   var floatFormatter: Formatter {
     let formatter = NumberFormatter()
@@ -67,7 +70,10 @@ struct SettingsView: View {
     initialDisturbanceRadiusMax: Float,
     initialDisturbanceStrengthMin: Float,
     initialDisturbanceStrengthMax: Float,
-    onSave: @escaping (Float, Float, Float, Float, Int, Int, Int, Int, Float, Float, Float, Float)
+    initialBatterySaverMode: Bool,
+    onSave: @escaping (
+      Float, Float, Float, Float, Int, Int, Int, Int, Float, Float, Float, Float, Bool
+    )
       -> Void,
     onDismiss: @escaping () -> Void
   ) {
@@ -83,6 +89,7 @@ struct SettingsView: View {
     self.defaultDisturbanceRadiusMax = initialDisturbanceRadiusMax
     self.defaultDisturbanceStrengthMin = initialDisturbanceStrengthMin
     self.defaultDisturbanceStrengthMax = initialDisturbanceStrengthMax
+    self.defaultBatterySaverMode = initialBatterySaverMode
 
     self._c = State(initialValue: initialC)
     self._dx = State(initialValue: initialDx)
@@ -96,13 +103,18 @@ struct SettingsView: View {
     self._disturbanceRadiusMax = State(initialValue: initialDisturbanceRadiusMax)
     self._disturbanceStrengthMin = State(initialValue: initialDisturbanceStrengthMin)
     self._disturbanceStrengthMax = State(initialValue: initialDisturbanceStrengthMax)
+    self._batterySaverMode = State(initialValue: initialBatterySaverMode)
     self.onSave = onSave
     self.onDismiss = onDismiss
   }
 
   var body: some View {
     VStack {
-      Text("Simulation Parameters").font(.headline)
+      Text("General Settings").font(.headline)
+      Divider()
+      generalSettings
+
+      Text("Simulation Parameters").font(.headline).padding(.top)
       Divider()
       simulationParametersGrid
 
@@ -137,45 +149,57 @@ struct SettingsView: View {
 
   private var disturbanceParameters: some View {
     VStack(spacing: 10) {
-      rangeField(label: "Cooldown (frames)", min: $disturbanceCooldownMin, max: $disturbanceCooldownMax, formatter: intFormatter)
-        .onChange(of: disturbanceCooldownMin) { _, newMin in
-          if newMin > disturbanceCooldownMax { disturbanceCooldownMax = newMin }
-          save()
-        }
-        .onChange(of: disturbanceCooldownMax) { _, newMax in
-          if newMax < disturbanceCooldownMin { disturbanceCooldownMin = newMax }
-          save()
-        }
+      rangeField(
+        label: "Cooldown (frames)", min: $disturbanceCooldownMin, max: $disturbanceCooldownMax,
+        formatter: intFormatter
+      )
+      .onChange(of: disturbanceCooldownMin) { _, newMin in
+        if newMin > disturbanceCooldownMax { disturbanceCooldownMax = newMin }
+        save()
+      }
+      .onChange(of: disturbanceCooldownMax) { _, newMax in
+        if newMax < disturbanceCooldownMin { disturbanceCooldownMin = newMax }
+        save()
+      }
 
-      rangeField(label: "Density", min: $disturbanceDensityMin, max: $disturbanceDensityMax, formatter: intFormatter)
-        .onChange(of: disturbanceDensityMin) { _, newMin in
-          if newMin > disturbanceDensityMax { disturbanceDensityMax = newMin }
-          save()
-        }
-        .onChange(of: disturbanceDensityMax) { _, newMax in
-          if newMax < disturbanceDensityMin { disturbanceDensityMin = newMax }
-          save()
-        }
+      rangeField(
+        label: "Density", min: $disturbanceDensityMin, max: $disturbanceDensityMax,
+        formatter: intFormatter
+      )
+      .onChange(of: disturbanceDensityMin) { _, newMin in
+        if newMin > disturbanceDensityMax { disturbanceDensityMax = newMin }
+        save()
+      }
+      .onChange(of: disturbanceDensityMax) { _, newMax in
+        if newMax < disturbanceDensityMin { disturbanceDensityMin = newMax }
+        save()
+      }
 
-      rangeField(label: "Radius", min: $disturbanceRadiusMin, max: $disturbanceRadiusMax, formatter: floatFormatter)
-        .onChange(of: disturbanceRadiusMin) { _, newMin in
-          if newMin > disturbanceRadiusMax { disturbanceRadiusMax = newMin }
-          save()
-        }
-        .onChange(of: disturbanceRadiusMax) { _, newMax in
-          if newMax < disturbanceRadiusMin { disturbanceRadiusMin = newMax }
-          save()
-        }
+      rangeField(
+        label: "Radius", min: $disturbanceRadiusMin, max: $disturbanceRadiusMax,
+        formatter: floatFormatter
+      )
+      .onChange(of: disturbanceRadiusMin) { _, newMin in
+        if newMin > disturbanceRadiusMax { disturbanceRadiusMax = newMin }
+        save()
+      }
+      .onChange(of: disturbanceRadiusMax) { _, newMax in
+        if newMax < disturbanceRadiusMin { disturbanceRadiusMin = newMax }
+        save()
+      }
 
-      rangeField(label: "Strength", min: $disturbanceStrengthMin, max: $disturbanceStrengthMax, formatter: floatFormatter)
-        .onChange(of: disturbanceStrengthMin) { _, newMin in
-          if newMin > disturbanceStrengthMax { disturbanceStrengthMax = newMin }
-          save()
-        }
-        .onChange(of: disturbanceStrengthMax) { _, newMax in
-          if newMax < disturbanceStrengthMin { disturbanceStrengthMin = newMax }
-          save()
-        }
+      rangeField(
+        label: "Strength", min: $disturbanceStrengthMin, max: $disturbanceStrengthMax,
+        formatter: floatFormatter
+      )
+      .onChange(of: disturbanceStrengthMin) { _, newMin in
+        if newMin > disturbanceStrengthMax { disturbanceStrengthMax = newMin }
+        save()
+      }
+      .onChange(of: disturbanceStrengthMax) { _, newMax in
+        if newMax < disturbanceStrengthMin { disturbanceStrengthMin = newMax }
+        save()
+      }
     }
   }
 
@@ -194,6 +218,7 @@ struct SettingsView: View {
         disturbanceRadiusMax = defaultDisturbanceRadiusMax
         disturbanceStrengthMin = defaultDisturbanceStrengthMin
         disturbanceStrengthMax = defaultDisturbanceStrengthMax
+        batterySaverMode = defaultBatterySaverMode
       }
       .buttonStyle(.bordered)
 
@@ -207,11 +232,21 @@ struct SettingsView: View {
     .padding()
   }
 
+  private var generalSettings: some View {
+    VStack(spacing: 10) {
+      HStack {
+        Toggle("Battery saver mode", isOn: $batterySaverMode)
+        Spacer()
+      }
+    }
+    .onChange(of: batterySaverMode) { _, _ in save() }
+  }
+
   private func save() {
     onSave(
       c, dx, dt, damper, disturbanceCooldownMin, disturbanceCooldownMax, disturbanceDensityMin,
       disturbanceDensityMax, disturbanceRadiusMin, disturbanceRadiusMax, disturbanceStrengthMin,
-      disturbanceStrengthMax)
+      disturbanceStrengthMax, batterySaverMode)
   }
 
   @ViewBuilder
@@ -226,7 +261,9 @@ struct SettingsView: View {
   }
 
   @ViewBuilder
-  private func rangeField<V>(label: String, min: Binding<V>, max: Binding<V>, formatter: Formatter) -> some View where V: CVarArg & Comparable {
+  private func rangeField<V>(label: String, min: Binding<V>, max: Binding<V>, formatter: Formatter)
+    -> some View where V: CVarArg & Comparable
+  {
     HStack {
       Text(label)
       Spacer()
@@ -235,7 +272,7 @@ struct SettingsView: View {
         .frame(maxWidth: 90)
 
       Image(systemName: "arrow.right")
-      
+
       TextField("Max", value: max, formatter: formatter)
         .textFieldStyle(RoundedBorderTextFieldStyle())
         .frame(maxWidth: 90)

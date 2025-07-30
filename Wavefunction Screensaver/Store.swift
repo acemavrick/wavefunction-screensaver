@@ -25,6 +25,7 @@ class Store: NSObject {
         static let disturbanceRadiusMax = "wavefunction.disturbanceRadiusMax"
         static let disturbanceStrengthMin = "wavefunction.disturbanceStrengthMin"
         static let disturbanceStrengthMax = "wavefunction.disturbanceStrengthMax"
+        static let batterySaverMode = "wavefunction.batterySaverMode"
     }
     
     public static let defaultC: Float = 3.0
@@ -39,6 +40,7 @@ class Store: NSObject {
     public static let defaultDisturbanceRadiusMax: Float = 3
     public static let defaultDisturbanceStrengthMin: Float = 1
     public static let defaultDisturbanceStrengthMax: Float = 3
+    public static let defaultBatterySaverMode: Bool = false
 
     static let shared = Store()
     
@@ -216,6 +218,20 @@ class Store: NSObject {
         }
         set {
             defaults.set(newValue, forKey: Keys.disturbanceStrengthMax)
+            defaults.synchronize()
+        }
+    }
+    
+    var batterySaverMode: Bool {
+        get {
+            if defaults.object(forKey: Keys.batterySaverMode) != nil {
+                return defaults.bool(forKey: Keys.batterySaverMode)
+            } else {
+                return Self.defaultBatterySaverMode
+            }
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.batterySaverMode)
             defaults.synchronize()
         }
     }
